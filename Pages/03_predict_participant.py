@@ -1,54 +1,63 @@
 import streamlit as st
 import pandas as pd
-import plotly.graph_objs as go
-from core.predictor_utils import load_predictor, predict_weeks_autoregressiv
+import h2o
+from h2o.automl import H2OAutoML
+import time
+import os
 
-st.set_page_config(page_title="03 - Teilnehmer Prognose", layout="wide")
+st.set_page_config(page_title="PrognoseTrainer – H2O AutoML", layout="wide")
+st.title("H2O AutoML: Gemeinsames GPU/CPU-Training beider Zielspalten")
 
-st.title("📈 Teilnehmer-Prognose")
-st.markdown("Gib die bekannten Werte ein – der PrognoseTrainer sagt dir, wie es weitergeht!")
+uploaded_csv = st.file_uploader("Lade die vorbereiteten Feature-Daten hoch (CSV aus Teil 1)", type=["csv"])
 
-# === 1. Modelle laden ===
-predictor_mathe = load_predictor("models/model_mathematik")
-predictor_raum = load_predictor("models/model_raumvorstellung")
+if uploaded_csv:
+    df = pd.read_csv(uploaded_csv)
+    st.subheader("Vorschau der Trainingsdaten")
+    st.dataframe(df.head(20))
 
-if predictor_mathe is None or predictor_raum is None:
-    st.error("❗ Modelle nicht gefunden. Bitte zuerst trainieren (Seite: 02 - Training).")
-    st.stop()
+    # Starte H2O
+    h2o.init(max_mem_size="8G", nthreads=-1)
 
-# === 2. Teilnehmerdaten eingeben ===
-with st.form("prognose_formular"):
-    teilnehmer_id = st.number_input("Teilnehmer-ID", min_value=1, max_value=9999, step=1)
-    letzte_woche = st.slider("Letzte bekannte Woche", min_value=1, max_value=15, value=4)
+    # Konvertiere Pandas nach H2OFrame
+    h2o_df = h2o.H2OFrame(df)
 
-    st.markdown("### Eingabewerte Woche 1 bis letzte bekannte Woche")
-    eingabedaten = []
-    for woche in range(1, letzte_woche + 1):
-        col1, col2 = st.columns(2)
-        with col1:
-            mathe = st.number_input(f"Mathematik Woche {woche}", min_value=0, max_value=100, step=1, key=f"mathe_{woche}")
-        with col2:
-            raum = st.number_input(f"Raumvorstellung Woche {woche}", min_value=0, max_value=100, step=1, key=f"raum_{woche}")
-        eingabedaten.append({
-            "Teilnehmer-ID": teilnehmer_id,
-            "Woche": woche,
-            "Mathematik": mathe,
-            "Raumvorstellung": raum
-        })
+    # Spalten definieren
+    target_math = "Mathematik"
+    target_raum = "Raumvorstellung"
+    feature_cols = [col for col in df.columns if col not in [target_math, target_raum]]
 
-    submitted = st.form_submit_button("Prognose starten")
+    # Nur Zeilen mit gültigem Zielwert
+    df_math = h2o_df[h2o_df[target_math].isna() == False]
+    df_raum = h2o_df[h2o_df[target_raum].isna() == False]
 
-if submitted:
-    df_eingabe = pd.DataFrame(eingabedaten)
-    prognose_df = predict_weeks_autoregressiv(df_eingabe, letzte_woche, teilnehmer_id, predictor_mathe, predictor_raum)
+    if df_math.nrows == 0:
+        st.error("❌ Keine gültigen Werte in der Zielspalte 'Mathematik'.")
+        st.stop()
+    if df_raum.nrows == 0:
+        st.error("❌ Keine gültigen Werte in der Zielspalte 'Raumvorstellung'.")
+        st.stop()
 
-    st.subheader("Prognose bis Woche 16")
-    st.dataframe(prognose_df)
+    if st.button("H2O AutoML Training starten"):
+        st.info("Training beginnt. Beide Modelle werden nacheinander mit denselben Einstellungen trainiert...")
+        progress = st.progress(0)
+        start = time.time()
 
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=prognose_df["Woche"], y=prognose_df["Mathematik (prognostiziert)"],
-                             mode='lines+markers', name='Mathematik'))
-    fig.add_trace(go.Scatter(x=prognose_df["Woche"], y=prognose_df["Raumvorstellung (prognostiziert)"],
-                             mode='lines+markers', name='Raumvorstellung'))
-    fig.update_layout(title="Prognoseverlauf", xaxis_title="Woche", yaxis_title="Wert (%)")
-    st.plotly_chart(fig, use_container_width=True)
+        # Mathematik-Modell trainieren
+        aml_math = H2OAutoML(max_runtime_secs=600, seed=42, sort_metric="RMSE")
+        aml_math.train(x=feature_cols, y=target_math, training_frame=df_math)
+        progress.progress(50)
+
+        # Raumvorstellung-Modell trainieren
+        aml_raum = H2OAutoML(max_runtime_secs=600, seed=42, sort_metric="RMSE")
+        aml_raum.train(x=feature_cols, y=target_raum, training_frame=df_raum)
+        progress.progress(100)
+
+        # Modelle speichern
+        os.makedirs("models/h2o", exist_ok=True)
+        h2o.save_model(model=aml_math.leader, path="models/h2o", force=True)
+        h2o.save_model(model=aml_raum.leader, path="models/h2o", force=True)
+
+        st.success(f"Training abgeschlossen in {round(time.time() - start, 2)} Sekunden.")
+        st.write("Beide Modelle wurden in 'models/h2o' gespeichert.")
+
+        h2o.shutdown(prompt=False)
