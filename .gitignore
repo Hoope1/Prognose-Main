@@ -1,0 +1,18 @@
+# Ordner, die ignoriert werden sollen
+AutogluonModels/
+exports/
+models/
+__pycache__/
+
+# Backup-Dateien
+*BACKUP.py
+
+# ZIP-Dateien
+*.zip
+
+# Alles andere außer den gewünschten Dateien/Ordnern
+!main.py
+!requirements.txt
+!Pages/
+!core/
+core/__pycache__/  # explizit core/__pycache__ ignorieren
