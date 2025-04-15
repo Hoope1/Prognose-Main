@@ -1,139 +1,74 @@
+# Neue Datei schreiben mit H2O AutoML (Variante 1: eine Session, zwei Modelle)
+h2o_train_model_path = os.path.join(pages_dir, "02_train_model_h2o.py")
+
+h2o_train_model_code = """
 import streamlit as st
 import pandas as pd
+import h2o
+from h2o.automl import H2OAutoML
 import time
-import torch
-from autogluon.tabular import TabularPredictor
+import os
 
-# Streamlit-Seitenkonfiguration
-st.set_page_config(page_title="PrognoseTrainer – Auto-GPU-Ensemble (Korrekt)", layout="wide")
-st.title("Automatisches GPU-basiertes Training mit Ensemble (Valide AutoGluon Modelle)")
+st.set_page_config(page_title="PrognoseTrainer – H2O AutoML", layout="wide")
+st.title("H2O AutoML: Gemeinsames GPU/CPU-Training beider Zielspalten")
 
-# CSV-Upload
 uploaded_csv = st.file_uploader("Lade die vorbereiteten Feature-Daten hoch (CSV aus Teil 1)", type=["csv"])
-
-# GPU-Konfiguration (dynamisch prüfen)
-def get_gpu_config():
-    if torch.cuda.is_available() and torch.cuda.device_count() > 0:
-        return {"ag_args_fit": {"fit": {"num_gpus": 1}}}
-    else:
-        return {}  # Fallback auf CPU
-
-ag_args_gpu = get_gpu_config()
 
 if uploaded_csv:
     df = pd.read_csv(uploaded_csv)
     st.subheader("Vorschau der Trainingsdaten")
     st.dataframe(df.head(20))
 
-    model_path_base = "models/auto_gpu_ensemble_valid"
-    df_math = df.dropna(subset=["Mathematik"]).copy()
-    df_raum = df.dropna(subset=["Raumvorstellung"]).copy()
+    # Starte H2O
+    h2o.init(max_mem_size="8G", nthreads=-1)
 
-    if df_math["Mathematik"].dropna().empty:
+    # Konvertiere Pandas nach H2OFrame
+    h2o_df = h2o.H2OFrame(df)
+
+    # Spalten definieren
+    target_math = "Mathematik"
+    target_raum = "Raumvorstellung"
+    feature_cols = [col for col in df.columns if col not in [target_math, target_raum]]
+
+    # Nur Zeilen mit gültigem Zielwert
+    df_math = h2o_df[h2o_df[target_math].isna() == False]
+    df_raum = h2o_df[h2o_df[target_raum].isna() == False]
+
+    if df_math.nrows == 0:
         st.error("❌ Keine gültigen Werte in der Zielspalte 'Mathematik'.")
         st.stop()
-    if df_raum["Raumvorstellung"].dropna().empty:
+    if df_raum.nrows == 0:
         st.error("❌ Keine gültigen Werte in der Zielspalte 'Raumvorstellung'.")
         st.stop()
 
-    if st.button("Automatisches GPU-Ensemble-Training starten (Valide AutoGluon Modelle)"):
-        st.info("Automatisches Training valider Modelle beginnt...")
+    if st.button("H2O AutoML Training starten"):
+        st.info("Training beginnt. Beide Modelle werden nacheinander mit denselben Einstellungen trainiert...")
         progress = st.progress(0)
-        status_area = st.empty()
-        start_time = time.time()
-        gpu_capable_models_math = set()
-        gpu_capable_models_raum = set()
+        start = time.time()
 
-        valid_models = ['LR', 'LGB', 'GBM', 'XGB', 'CAT', 'NN_TORCH', 'FASTAI', 'RF', 'XT', 'KNN']
-        time_limit_probe = 60
-        total_steps = len(valid_models) * 2
-        step_increment = 50 / total_steps
-        current_progress = 0
+        # Mathematik-Modell trainieren
+        aml_math = H2OAutoML(max_runtime_secs=600, seed=42, sort_metric="RMSE")
+        aml_math.train(x=feature_cols, y=target_math, training_frame=df_math)
+        progress.progress(50)
 
-        st.subheader("GPU-Prüfung für Modelle...")
-        for model in valid_models:
-            status_area.text(f"Prüfe GPU-Fähigkeit: Mathematik – {model}")
-            try:
-                TabularPredictor(label="Mathematik", problem_type="regression").fit(
-                    train_data=df_math.sample(frac=0.1, random_state=42),
-                    hyperparameters={model: [{}]},
-                    time_limit=time_limit_probe,
-                    verbosity=0,
-                    **ag_args_gpu
-                )
-                gpu_capable_models_math.add(model)
-                st.info(f"✅ {model} ist GPU-fähig (Mathematik)")
-            except Exception as e:
-                st.warning(f"❌ {model} nicht GPU-fähig (Mathematik): {e}")
-            current_progress += step_increment
-            progress.progress(int(current_progress))
-
-            status_area.text(f"Prüfe GPU-Fähigkeit: Raumvorstellung – {model}")
-            try:
-                TabularPredictor(label="Raumvorstellung", problem_type="regression").fit(
-                    train_data=df_raum.sample(frac=0.1, random_state=42),
-                    hyperparameters={model: [{}]},
-                    time_limit=time_limit_probe,
-                    verbosity=0,
-                    **ag_args_gpu
-                )
-                gpu_capable_models_raum.add(model)
-                st.info(f"✅ {model} ist GPU-fähig (Raumvorstellung)")
-            except Exception as e:
-                st.warning(f"❌ {model} nicht GPU-fähig (Raumvorstellung): {e}")
-            current_progress += step_increment
-            progress.progress(int(current_progress))
-
-        st.subheader("Starte Haupttraining (GPU-Validierte Modelle)...")
-        main_start_time = time.time()
-        step_increment = 50 / 2
-
-        if gpu_capable_models_math:
-            status_area.text(f"Trainiere Mathematik mit: {gpu_capable_models_math}")
-            predictor_math = TabularPredictor(
-                label="Mathematik",
-                path=f"{model_path_base}_math",
-                problem_type="regression"
-            ).fit(
-                train_data=df_math,
-                presets="best_quality",
-                included_model_types=list(gpu_capable_models_math),
-                refit_full=True,
-                set_best_to_refit_full=True,
-                verbosity=2,
-                **ag_args_gpu
-            )
-            st.success("✅ Mathematik-Modell erfolgreich trainiert.")
-            st.dataframe(predictor_math.leaderboard(silent=True))
-        else:
-            st.warning("⚠️ Keine GPU-fähigen Modelle für Mathematik verfügbar.")
-        current_progress += step_increment
-        progress.progress(int(current_progress))
-
-        if gpu_capable_models_raum:
-            status_area.text(f"Trainiere Raumvorstellung mit: {gpu_capable_models_raum}")
-            predictor_raum = TabularPredictor(
-                label="Raumvorstellung",
-                path=f"{model_path_base}_raum",
-                problem_type="regression"
-            ).fit(
-                train_data=df_raum,
-                presets="best_quality",
-                included_model_types=list(gpu_capable_models_raum),
-                refit_full=True,
-                set_best_to_refit_full=True,
-                verbosity=2,
-                **ag_args_gpu
-            )
-            st.success("✅ Raumvorstellungs-Modell erfolgreich trainiert.")
-            st.dataframe(predictor_raum.leaderboard(silent=True))
-        else:
-            st.warning("⚠️ Keine GPU-fähigen Modelle für Raumvorstellung verfügbar.")
-        current_progress += step_increment
+        # Raumvorstellung-Modell trainieren
+        aml_raum = H2OAutoML(max_runtime_secs=600, seed=42, sort_metric="RMSE")
+        aml_raum.train(x=feature_cols, y=target_raum, training_frame=df_raum)
         progress.progress(100)
 
-        end_time = time.time()
-        status_area.success(f"Training abgeschlossen in {int(end_time - start_time)} Sekunden.")
-        st.balloons()
-else:
-    st.info("Bitte lade eine CSV-Datei hoch, um zu starten.")
+        # Modelle speichern
+        os.makedirs("models/h2o", exist_ok=True)
+        h2o.save_model(model=aml_math.leader, path="models/h2o", force=True)
+        h2o.save_model(model=aml_raum.leader, path="models/h2o", force=True)
+
+        st.success(f"Training abgeschlossen in {round(time.time() - start, 2)} Sekunden.")
+        st.write("Beide Modelle wurden in 'models/h2o' gespeichert.")
+
+        h2o.shutdown(prompt=False)
+"""
+
+# Datei speichern
+with open(h2o_train_model_path, "w", encoding="utf-8") as f:
+    f.write(h2o_train_model_code)
+
+h2o_train_model_path
