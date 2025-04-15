@@ -81,3 +81,24 @@ def predict_weeks_autoregressiv(df_eingabe, letzte_woche, teilnehmer_id, predict
         std_raum = df_raum.std() if len(df_raum) > 1 else 0
 
     return pd.DataFrame(prognose_ergebnis)
+import os
+import h2o
+
+def load_h2o_models(model_dir="models/h2o"):
+    """
+    Lädt die H2O-Modelle für Mathematik und Raumvorstellung aus dem angegebenen Verzeichnis.
+    Gibt ein Tupel (modell_mathe, modell_raum) zurück.
+    """
+    h2o.init(max_mem_size="8G", nthreads=-1)
+
+    model_files = os.listdir(model_dir)
+    math_model_file = next((f for f in model_files if "Mathematik" in f), None)
+    raum_model_file = next((f for f in model_files if "Raumvorstellung" in f), None)
+
+    if not math_model_file or not raum_model_file:
+        raise FileNotFoundError("Eines der Modelle konnte nicht gefunden werden.")
+
+    model_math = h2o.load_model(os.path.join(model_dir, math_model_file))
+    model_raum = h2o.load_model(os.path.join(model_dir, raum_model_file))
+
+    return model_math, model_raum
