@@ -1,7 +1,3 @@
-# Neue Datei schreiben mit H2O AutoML (Variante 1: eine Session, zwei Modelle)
-h2o_train_model_path = os.path.join(pages_dir, "02_train_model_h2o.py")
-
-h2o_train_model_code = """
 import streamlit as st
 import pandas as pd
 import h2o
@@ -65,10 +61,3 @@ if uploaded_csv:
         st.write("Beide Modelle wurden in 'models/h2o' gespeichert.")
 
         h2o.shutdown(prompt=False)
-"""
-
-# Datei speichern
-with open(h2o_train_model_path, "w", encoding="utf-8") as f:
-    f.write(h2o_train_model_code)
-
-h2o_train_model_path
